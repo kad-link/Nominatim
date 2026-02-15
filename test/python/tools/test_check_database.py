@@ -2,7 +2,7 @@
 #
 # This file is part of Nominatim. (https://nominatim.org)
 #
-# Copyright (C) 2025 by the Nominatim developer community.
+# Copyright (C) 2026 by the Nominatim developer community.
 # For a full list of authors see the git log.
 """
 Tests for database integrity checks.
@@ -46,8 +46,7 @@ def test_check_database_version_bad(property_table, temp_db_conn, def_config):
     assert chkdb.check_database_version(temp_db_conn, def_config) == chkdb.CheckState.FATAL
 
 
-def test_check_placex_table_good(table_factory, temp_db_conn, def_config):
-    table_factory('placex')
+def test_check_placex_table_good(placex_table, temp_db_conn, def_config):
     assert chkdb.check_placex_table(temp_db_conn, def_config) == chkdb.CheckState.OK
 
 
@@ -55,13 +54,13 @@ def test_check_placex_table_bad(temp_db_conn, def_config):
     assert chkdb.check_placex_table(temp_db_conn, def_config) == chkdb.CheckState.FATAL
 
 
-def test_check_placex_table_size_good(table_factory, temp_db_conn, def_config):
-    table_factory('placex', content=((1, ), (2, )))
+def test_check_placex_table_size_good(placex_row, temp_db_conn, def_config):
+    for _ in range(2):
+        placex_row()
     assert chkdb.check_placex_size(temp_db_conn, def_config) == chkdb.CheckState.OK
 
 
-def test_check_placex_table_size_bad(table_factory, temp_db_conn, def_config):
-    table_factory('placex')
+def test_check_placex_table_size_bad(placex_table, temp_db_conn, def_config):
     assert chkdb.check_placex_size(temp_db_conn, def_config) == chkdb.CheckState.FATAL
 
 
@@ -84,15 +83,22 @@ def test_check_tokenizer(temp_db_conn, def_config, monkeypatch,
     assert chkdb.check_tokenizer(temp_db_conn, def_config) == state
 
 
-def test_check_indexing_good(table_factory, temp_db_conn, def_config):
-    table_factory('placex', 'place_id int, indexed_status smallint',
-                  content=((1, 0), (2, 0)))
+def test_check_indexing_good(placex_row, temp_db_conn, def_config):
+    for _ in range(2):
+        placex_row(indexed_status=0)
     assert chkdb.check_indexing(temp_db_conn, def_config) == chkdb.CheckState.OK
 
 
-def test_check_indexing_bad(table_factory, temp_db_conn, def_config):
-    table_factory('placex', 'place_id int, indexed_status smallint',
-                  content=((1, 0), (2, 2)))
+def test_check_indexing_bad(placex_row, temp_db_conn, def_config):
+    for status in (0, 2):
+        placex_row(indexed_status=status)
+    assert chkdb.check_indexing(temp_db_conn, def_config) == chkdb.CheckState.FAIL
+
+
+def test_check_indexing_bad_frozen(placex_row, temp_db_conn, def_config):
+    for status in (0, 2):
+        placex_row(indexed_status=status)
+    temp_db_conn.execute('DROP TABLE place')
     assert chkdb.check_indexing(temp_db_conn, def_config) == chkdb.CheckState.WARN
 
 
