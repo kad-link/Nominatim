@@ -145,11 +145,12 @@ def country_row(country_table, temp_db_cursor):
 
 
 @pytest.fixture
-def load_sql(temp_db_conn, country_row):
-    proc = SQLPreprocessor(temp_db_conn, Configuration(None))
+def load_sql(temp_db_conn, country_table):
+    conf = Configuration(None)
 
-    def _run(filename, **kwargs):
-        proc.run_sql_file(temp_db_conn, filename, **kwargs)
+    def _run(*filename, **kwargs):
+        for fn in filename:
+            SQLPreprocessor(temp_db_conn, conf).run_sql_file(temp_db_conn, fn, **kwargs)
 
     return _run
 
