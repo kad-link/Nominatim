@@ -2,7 +2,7 @@
 #
 # This file is part of Nominatim. (https://nominatim.org)
 #
-# Copyright (C) 2024 by the Nominatim developer community.
+# Copyright (C) 2026 by the Nominatim developer community.
 # For a full list of authors see the git log.
 """
 Sanitizer that preprocesses address tags for house numbers. The sanitizer
@@ -10,6 +10,7 @@ allows to
 
 * define which tags are to be considered house numbers (see 'filter-kind')
 * split house number lists into individual numbers (see 'delimiters')
+* expand interpolated house numbers
 
 Arguments:
     delimiters: Define the set of characters to be used for
@@ -23,12 +24,18 @@ Arguments:
                      instead of a house number. Either takes a single string
                      or a list of strings, where each string is a regular
                      expression that must match the full house number value.
+    expand-interpolations: When true, expand house number ranges to separate numbers
+                           when an 'interpolation' is present. (default: true)
+
 """
-from typing import Callable, Iterator, List
+from typing import Callable, Iterator, Iterable, Union
+import re
 
 from ...data.place_name import PlaceName
 from .base import ProcessInfo
 from .config import SanitizerConfig
+
+RANGE_REGEX = re.compile(r'\d+-\d+')
 
 
 class _HousenumberSanitizer:
@@ -38,21 +45,40 @@ class _HousenumberSanitizer:
         self.split_regexp = config.get_delimiter()
 
         self.filter_name = config.get_filter('convert-to-name', 'FAIL_ALL')
+        self.expand_interpolations = config.get_bool('expand-interpolations', True)
 
     def __call__(self, obj: ProcessInfo) -> None:
         if not obj.address:
             return
 
-        new_address: List[PlaceName] = []
+        itype: Union[int, str, None] = None
+        if self.expand_interpolations:
+            itype = next((i.name for i in obj.address if i.kind == 'interpolation'), None)
+            if itype is not None:
+                if itype == 'all':
+                    itype = 1
+                elif len(itype) == 1 and itype.isdigit():
+                    itype = int(itype)
+                elif itype not in ('odd', 'even'):
+                    itype = None
+
+        new_address: list[PlaceName] = []
         for item in obj.address:
             if self.filter_kind(item.kind):
+                if itype is not None and RANGE_REGEX.fullmatch(item.name):
+                    hnrs = self._expand_range(itype, item.name)
+                    if hnrs:
+                        new_address.extend(item.clone(kind='housenumber', name=str(hnr))
+                                           for hnr in hnrs)
+                        continue
+
                 if self.filter_name(item.name):
                     obj.names.append(item.clone(kind='housenumber'))
                 else:
                     new_address.extend(item.clone(kind='housenumber', name=n)
                                        for n in self.sanitize(item.name))
-            else:
-                # Don't touch other address items.
+            elif item.kind != 'interpolation':
+                # Ignore interpolation, otherwise don't touch other address items.
                 new_address.append(item)
 
         obj.address = new_address
@@ -69,6 +95,22 @@ class _HousenumberSanitizer:
 
     def _regularize(self, hnr: str) -> Iterator[str]:
         yield hnr
+
+    def _expand_range(self, itype: Union[str, int], hnr: str) -> Iterable[int]:
+        first, last = (int(i) for i in hnr.split('-'))
+
+        if isinstance(itype, int):
+            step = itype
+        else:
+            step = 2
+            if (itype == 'even' and first % 2 == 1)\
+               or (itype == 'odd' and first % 2 == 0):
+                first += 1
+
+        if (last + 1 - first) / step < 10:
+            return range(first, last + 1, step)
+
+        return []
 
 
 def create(config: SanitizerConfig) -> Callable[[ProcessInfo], None]:

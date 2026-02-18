@@ -318,3 +318,64 @@ Feature: Searching of house numbers
         Then the result set contains
          | object |
          | W20 |
+
+    Scenario: A housenumber with interpolation is found
+        Given the places
+         | osm | class    | type | housenr | addr+interpolation | geometry |
+         | N1  | building | yes  | 1-5     | odd                | 9        |
+        And the places
+         | osm | class   | type | name      | geometry |
+         | W10 | highway | path | Rue Paris | 1,2,3    |
+        When importing
+        When geocoding "Rue Paris 1"
+        Then the result set contains
+         | object | address+house_number |
+         | N1     | 1-5 |
+        When geocoding "Rue Paris 3"
+        Then the result set contains
+         | object | address+house_number |
+         | N1     | 1-5 |
+        When geocoding "Rue Paris 5"
+        Then the result set contains
+         | object | address+house_number |
+         | N1     | 1-5 |
+        When geocoding "Rue Paris 2"
+        Then the result set contains
+         | object |
+         | W10  |
+
+    Scenario: A housenumber with bad interpolation is ignored
+        Given the places
+         | osm | class    | type | housenr | addr+interpolation | geometry |
+         | N1  | building | yes  | 1-5     | bad                | 9        |
+        And the places
+         | osm | class   | type | name      | geometry |
+         | W10 | highway | path | Rue Paris | 1,2,3    |
+        When importing
+        When geocoding "Rue Paris 1-5"
+        Then the result set contains
+         | object | address+house_number |
+         | N1     | 1-5 |
+        When geocoding "Rue Paris 3"
+        Then the result set contains
+         | object |
+         | W10    |
+
+
+    Scenario: A bad housenumber with a good interpolation is just a housenumber
+        Given the places
+         | osm | class    | type | housenr | addr+interpolation | geometry |
+         | N1  | building | yes  | 1-100   | all                | 9        |
+        And the places
+         | osm | class   | type | name      | geometry |
+         | W10 | highway | path | Rue Paris | 1,2,3    |
+        When importing
+        When geocoding "Rue Paris 1-100"
+        Then the result set contains
+         | object | address+house_number |
+         | N1     | 1-100 |
+        When geocoding "Rue Paris 3"
+        Then the result set contains
+         | object |
+         | W10    |
+
