@@ -2,7 +2,7 @@
 #
 # This file is part of Nominatim. (https://nominatim.org)
 #
-# Copyright (C) 2025 by the Nominatim developer community.
+# Copyright (C) 2026 by the Nominatim developer community.
 # For a full list of authors see the git log.
 """
 Tests for the sanitizer that normalizes housenumbers.
@@ -67,3 +67,25 @@ def test_convert_to_name_unconverted(def_config, number):
 
     assert 'housenumber' not in set(p.kind for p in names)
     assert ('housenumber', number) in set((p.kind, p.name) for p in address)
+
+
+@pytest.mark.parametrize('hnr,itype,out', [
+                            ('1-5', 'all', (1, 2, 3, 4, 5)),
+                            ('1-5', 'odd', (1, 3, 5)),
+                            ('1-5', 'even', (2, 4)),
+                            ('6-9', '1', (6, 7, 8, 9)),
+                            ('6-9', '2', (6, 8)),
+                            ('6-9', '3', (6, 9)),
+                            ('6-9', '5', (6,)),
+                            ('6-9', 'odd', (7, 9)),
+                            ('6-9', 'even', (6, 8)),
+                            ('6-22', 'even', (6, 8, 10, 12, 14, 16, 18, 20, 22))
+                            ])
+def test_convert_interpolations(sanitize, hnr, itype, out):
+    assert set(sanitize(housenumber=hnr, interpolation=itype)) \
+            == {('housenumber', str(i)) for i in out}
+
+
+@pytest.mark.parametrize('hnr', ('23', '23-', '3z-f', '1-10', '5-1', '1-4-5'))
+def test_ignore_interpolation_with_bad_housenumber(sanitize, hnr):
+    assert sanitize(housenumber=hnr, interpolation='all') == [('housenumber', hnr)]
