@@ -78,7 +78,7 @@ class _PostcodeCollector:
                 self.collected[normalized] += (x, y)
 
     def commit(self, conn: Connection, analyzer: AbstractAnalyzer,
-               project_dir: Optional[Path]) -> None:
+               project_dir: Optional[Path], is_initial: bool) -> None:
         """ Update postcodes for the country from the postcodes selected so far.
 
             When 'project_dir' is set, then any postcode files found in this
@@ -87,11 +87,14 @@ class _PostcodeCollector:
         if project_dir is not None:
             self._update_from_external(analyzer, project_dir)
 
-        with conn.cursor() as cur:
-            cur.execute("""SELECT postcode FROM location_postcodes
-                           WHERE country_code = %s AND osm_id is null""",
-                        (self.country, ))
-            to_delete = [row[0] for row in cur if row[0] not in self.collected]
+        if is_initial:
+            to_delete = []
+        else:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT postcode FROM location_postcodes
+                               WHERE country_code = %s AND osm_id is null""",
+                            (self.country, ))
+                to_delete = [row[0] for row in cur if row[0] not in self.collected]
 
         to_add = [dict(zip(('pc', 'x', 'y'), (k, *v.centroid())))
                   for k, v in self.collected.items()]
@@ -102,22 +105,32 @@ class _PostcodeCollector:
 
         with conn.cursor() as cur:
             if to_add:
-                cur.executemany(pysql.SQL(
-                    """INSERT INTO location_postcodes
-                         (country_code, rank_search, postcode, centroid, geometry)
-                       VALUES ({}, {}, %(pc)s,
-                               ST_SetSRID(ST_MakePoint(%(x)s, %(y)s), 4326),
-                               expand_by_meters(ST_SetSRID(ST_MakePoint(%(x)s, %(y)s), 4326), {}))
-                    """).format(pysql.Literal(self.country),
-                                pysql.Literal(_extent_to_rank(self.extent)),
-                                pysql.Literal(self.extent)),
-                    to_add)
+                columns = ['country_code',
+                           'rank_search',
+                           'postcode',
+                           'centroid',
+                           'geometry']
+                values = [pysql.Literal(self.country),
+                          pysql.Literal(_extent_to_rank(self.extent)),
+                          pysql.Placeholder('pc'),
+                          pysql.SQL('ST_SetSRID(ST_MakePoint(%(x)s, %(y)s), 4326)'),
+                          pysql.SQL("""expand_by_meters(
+                                           ST_SetSRID(ST_MakePoint(%(x)s, %(y)s), 4326), {})""")
+                               .format(pysql.Literal(self.extent))]
+                if is_initial:
+                    columns.extend(('place_id', 'indexed_status'))
+                    values.extend((pysql.SQL("nextval('seq_place')"), pysql.Literal(1)))
+
+                cur.executemany(pysql.SQL("INSERT INTO location_postcodes ({}) VALUES ({})")
+                                     .format(pysql.SQL(',')
+                                                  .join(pysql.Identifier(c) for c in columns),
+                                             pysql.SQL(',').join(values)),
+                                to_add)
             if to_delete:
                 cur.execute("""DELETE FROM location_postcodes
                                WHERE country_code = %s and postcode = any(%s)
                                      AND osm_id is null
                             """, (self.country, to_delete))
-            cur.execute("ANALYSE location_postcodes")
 
     def _update_from_external(self, analyzer: AbstractAnalyzer, project_dir: Path) -> None:
         """ Look for an external postcode file for the active country in
@@ -176,45 +189,72 @@ def update_postcodes(dsn: str, project_dir: Optional[Path], tokenizer: AbstractT
                               SET country_code = get_country_code(centroid)
                               WHERE country_code is null
                          """)
+            is_initial = _is_postcode_table_empty(conn)
+            if is_initial:
+                conn.execute("""ALTER TABLE location_postcodes
+                                DISABLE TRIGGER location_postcodes_before_insert""")
             # Now update first postcode areas
-            _update_postcode_areas(conn, analyzer, matcher)
+            _update_postcode_areas(conn, analyzer, matcher, is_initial)
             # Then fill with estimated postcode centroids from other info
-            _update_guessed_postcode(conn, analyzer, matcher, project_dir)
+            _update_guessed_postcode(conn, analyzer, matcher, project_dir, is_initial)
+            if is_initial:
+                conn.execute("""ALTER TABLE location_postcodes
+                                ENABLE TRIGGER location_postcodes_before_insert""")
             conn.commit()
 
         analyzer.update_postcodes_from_db()
 
 
+def _is_postcode_table_empty(conn: Connection) -> bool:
+    """ Check if there are any entries in the location_postcodes table yet.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT place_id FROM location_postcodes LIMIT 1")
+        return cur.fetchone() is None
+
+
 def _insert_postcode_areas(conn: Connection, country_code: str,
-                           extent: int, pcs: list[dict[str, str]]) -> None:
+                           extent: int, pcs: list[dict[str, str]],
+                           is_initial: bool) -> None:
     if pcs:
         with conn.cursor() as cur:
+            columns = ['osm_id', 'country_code',
+                       'rank_search', 'postcode',
+                       'centroid', 'geometry']
+            values = [pysql.Identifier('osm_id'), pysql.Identifier('country_code'),
+                      pysql.Literal(_extent_to_rank(extent)), pysql.Placeholder('out'),
+                      pysql.Identifier('centroid'), pysql.Identifier('geometry')]
+            if is_initial:
+                columns.extend(('place_id', 'indexed_status'))
+                values.extend((pysql.SQL("nextval('seq_place')"), pysql.Literal(1)))
+
             cur.executemany(
                 pysql.SQL(
-                    """ INSERT INTO location_postcodes
-                            (osm_id, country_code, rank_search, postcode, centroid, geometry)
-                            SELECT osm_id, country_code, {}, %(out)s, centroid, geometry
-                            FROM place_postcode
+                    """ INSERT INTO location_postcodes ({})
+                            SELECT {} FROM place_postcode
                             WHERE osm_type = 'R'
                                   and country_code = {} and postcode = %(in)s
                                   and geometry is not null
-                    """).format(pysql.Literal(_extent_to_rank(extent)),
+                    """).format(pysql.SQL(',')
+                                     .join(pysql.Identifier(c) for c in columns),
+                                pysql.SQL(',').join(values),
                                 pysql.Literal(country_code)),
                 pcs)
 
 
 def _update_postcode_areas(conn: Connection, analyzer: AbstractAnalyzer,
-                           matcher: PostcodeFormatter) -> None:
+                           matcher: PostcodeFormatter, is_initial: bool) -> None:
     """ Update the postcode areas made from postcode boundaries.
     """
     # first delete all areas that have gone
-    conn.execute(""" DELETE FROM location_postcodes pc
-                     WHERE pc.osm_id is not null
-                       AND NOT EXISTS(
-                              SELECT * FROM place_postcode pp
-                              WHERE pp.osm_type = 'R' and pp.osm_id = pc.osm_id
-                                    and geometry is not null)
-                """)
+    if not is_initial:
+        conn.execute(""" DELETE FROM location_postcodes pc
+                         WHERE pc.osm_id is not null
+                           AND NOT EXISTS(
+                                  SELECT * FROM place_postcode pp
+                                  WHERE pp.osm_type = 'R' and pp.osm_id = pc.osm_id
+                                        and geometry is not null)
+                    """)
     # now insert all in country batches, triggers will ensure proper updates
     with conn.cursor() as cur:
         cur.execute(""" SELECT country_code, postcode FROM place_postcode
@@ -230,7 +270,8 @@ def _update_postcode_areas(conn: Connection, analyzer: AbstractAnalyzer,
                 fmt = matcher.get_matcher(country_code)
             elif country_code != cc:
                 _insert_postcode_areas(conn, country_code,
-                                       matcher.get_postcode_extent(country_code), pcs)
+                                       matcher.get_postcode_extent(country_code), pcs,
+                                       is_initial)
                 country_code = cc
                 fmt = matcher.get_matcher(country_code)
                 pcs = []
@@ -241,21 +282,26 @@ def _update_postcode_areas(conn: Connection, analyzer: AbstractAnalyzer,
 
         if country_code is not None and pcs:
             _insert_postcode_areas(conn, country_code,
-                                   matcher.get_postcode_extent(country_code), pcs)
+                                   matcher.get_postcode_extent(country_code), pcs,
+                                   is_initial)
 
 
 def _update_guessed_postcode(conn: Connection, analyzer: AbstractAnalyzer,
-                             matcher: PostcodeFormatter, project_dir: Optional[Path]) -> None:
+                             matcher: PostcodeFormatter, project_dir: Optional[Path],
+                             is_initial: bool) -> None:
     """ Computes artificial postcode centroids from the placex table,
         potentially enhances it with external data and then updates the
         postcodes in the table 'location_postcodes'.
     """
     # First get the list of countries that currently have postcodes.
     # (Doing this before starting to insert, so it is fast on import.)
-    with conn.cursor() as cur:
-        cur.execute("""SELECT DISTINCT country_code FROM location_postcodes
-                        WHERE osm_id is null""")
-        todo_countries = {row[0] for row in cur}
+    if is_initial:
+        todo_countries: set[str] = set()
+    else:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT DISTINCT country_code FROM location_postcodes
+                            WHERE osm_id is null""")
+            todo_countries = {row[0] for row in cur}
 
     # Next, get the list of postcodes that are already covered by areas.
     area_pcs = defaultdict(set)
@@ -275,6 +321,7 @@ def _update_guessed_postcode(conn: Connection, analyzer: AbstractAnalyzer,
                         FROM place_postcode WHERE geometry is not null)
                     """)
         cur.execute("CREATE INDEX ON _global_postcode_area USING gist(geometry)")
+
     # Recompute the list of valid postcodes from placex.
     with conn.cursor(name="placex_postcodes") as cur:
         cur.execute("""
@@ -296,7 +343,7 @@ def _update_guessed_postcode(conn: Connection, analyzer: AbstractAnalyzer,
         for country, postcode, x, y in cur:
             if collector is None or country != collector.country:
                 if collector is not None:
-                    collector.commit(conn, analyzer, project_dir)
+                    collector.commit(conn, analyzer, project_dir, is_initial)
                 collector = _PostcodeCollector(country, matcher.get_matcher(country),
                                                matcher.get_postcode_extent(country),
                                                exclude=area_pcs[country])
@@ -304,14 +351,14 @@ def _update_guessed_postcode(conn: Connection, analyzer: AbstractAnalyzer,
             collector.add(postcode, x, y)
 
         if collector is not None:
-            collector.commit(conn, analyzer, project_dir)
+            collector.commit(conn, analyzer, project_dir, is_initial)
 
     # Now handle any countries that are only in the postcode table.
     for country in todo_countries:
         fmt = matcher.get_matcher(country)
         ext = matcher.get_postcode_extent(country)
         _PostcodeCollector(country, fmt, ext,
-                           exclude=area_pcs[country]).commit(conn, analyzer, project_dir)
+                           exclude=area_pcs[country]).commit(conn, analyzer, project_dir, False)
 
     conn.execute("DROP TABLE IF EXISTS _global_postcode_area")
 
