@@ -84,6 +84,10 @@ class UpdateRefresh:
                            help='Do not enable code for propagating updates')
         group.add_argument('--enable-debug-statements', action='store_true',
                            help='Enable debug warning statements in functions')
+        group = parser.add_argument_group('Arguments for postcode refresh')
+        group.add_argument('--force-reimport', action='store_true',
+                           dest='postcode_force_reimport',
+                           help='Recompute the postcodes from scratch instead of updating')
 
     def run(self, args: NominatimArgs) -> int:
         from ..tools import refresh, postcodes
@@ -96,7 +100,8 @@ class UpdateRefresh:
                 LOG.warning("Update postcodes centroid")
                 tokenizer = self._get_tokenizer(args.config)
                 postcodes.update_postcodes(args.config.get_libpq_dsn(),
-                                           args.project_dir, tokenizer)
+                                           args.project_dir, tokenizer,
+                                           force_reimport=args.postcode_force_reimport)
                 indexer = Indexer(args.config.get_libpq_dsn(), tokenizer,
                                   args.threads or 1)
                 asyncio.run(indexer.index_postcodes())

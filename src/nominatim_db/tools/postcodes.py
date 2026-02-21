@@ -177,7 +177,8 @@ class _PostcodeCollector:
         return None
 
 
-def update_postcodes(dsn: str, project_dir: Optional[Path], tokenizer: AbstractTokenizer) -> None:
+def update_postcodes(dsn: str, project_dir: Optional[Path],
+                     tokenizer: AbstractTokenizer, force_reimport: bool = False) -> None:
     """ Update the table of postcodes from the input tables
         placex and place_postcode.
     """
@@ -189,7 +190,11 @@ def update_postcodes(dsn: str, project_dir: Optional[Path], tokenizer: AbstractT
                               SET country_code = get_country_code(centroid)
                               WHERE country_code is null
                          """)
-            is_initial = _is_postcode_table_empty(conn)
+            if force_reimport:
+                conn.execute("TRUNCATE location_postcodes")
+                is_initial = True
+            else:
+                is_initial = _is_postcode_table_empty(conn)
             if is_initial:
                 conn.execute("""ALTER TABLE location_postcodes
                                 DISABLE TRIGGER location_postcodes_before_insert""")
