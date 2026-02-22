@@ -23,6 +23,8 @@ CREATE UNIQUE INDEX idx_location_postcodes_id ON location_postcodes
   USING BTREE (place_id) {{db.tablespace.search_index}};
 CREATE INDEX idx_location_postcodes_geometry ON location_postcodes
   USING GIST (geometry) {{db.tablespace.search_index}};
+CREATE INDEX idx_location_postcodes_centroid ON location_postcodes
+  USING GIST (centroid) {{db.tablespace.search_index}};
 CREATE INDEX IF NOT EXISTS idx_location_postcodes_postcode ON location_postcodes
   USING BTREE (postcode, country_code) {{db.tablespace.search_index}};
 CREATE INDEX IF NOT EXISTS idx_location_postcodes_osmid ON location_postcodes
