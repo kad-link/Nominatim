@@ -120,6 +120,7 @@ class NominatimArgs:
     data_object: Sequence[Tuple[str, int]]
     data_area: Sequence[Tuple[str, int]]
     ro_access: bool
+    postcode_force_reimport: bool
 
     # Arguments to 'replication'
     init: bool
