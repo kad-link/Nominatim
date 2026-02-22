@@ -153,8 +153,7 @@ BEGIN
     IF ST_GeometryType(geom) in ('ST_Polygon','ST_MultiPolygon') THEN
       SELECT min(postcode), count(*) FROM
         (SELECT postcode FROM location_postcodes
-           WHERE geom && location_postcodes.geometry -- want to use the index
-                 AND ST_Contains(geom, location_postcodes.centroid)
+           WHERE ST_Contains(geom, location_postcodes.centroid)
                  AND country_code = country
            LIMIT 2) sub
         INTO outcode, cnt;
